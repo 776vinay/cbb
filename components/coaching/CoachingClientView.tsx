@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   Dimensions,
   RefreshControl,
+  Alert,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import {
@@ -21,16 +22,16 @@ import {
   Users,
   Target,
   Award,
-  Activity
+  Activity,
+  CheckCircle,
+  AlertCircle,
 } from 'lucide-react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useColorScheme, getColors } from '../../hooks/useColorScheme';
 import { router } from 'expo-router';
 import { useTodayDataNew } from '../../hooks/useTodayDataNew';
-import { getWorkoutTemplates } from '../../lib/workoutTemplates'; // Import from new lib
-import { getClientTrainingSessions } from '../../lib/trainingSessionQueries'; // Import from new lib
-import { supabase } from '../../lib/supabase';
-import { WorkoutTemplate } from '@/types/workout'; // Import WorkoutTemplate type
+import { getWorkoutTemplates, initializeDefaultTemplates } from '../../lib/workoutTemplates';
+import { getClientTrainingSessions } from '../../lib/trainingSessionQueries';
 
 const { width } = Dimensions.get('window');
 
@@ -52,20 +53,23 @@ export default function CoachingClientView() {
 
   const [selectedTab, setSelectedTab] = useState('workouts');
   const [refreshing, setRefreshing] = useState(false);
-  const [workoutTemplates, setWorkoutTemplates] = useState<WorkoutTemplate[]>([]);
+  const [workoutTemplates, setWorkoutTemplates] = useState<any[]>([]);
   const [weeklyWorkouts, setWeeklyWorkouts] = useState<WeeklyWorkout[]>([]);
   const [loadingWeekly, setLoadingWeekly] = useState(true);
 
   useEffect(() => {
     loadWorkoutTemplates();
-    // Only load weekly workouts if userProfile is available from useTodayDataNew
+  }, []);
+
+  useEffect(() => {
     if (data?.profile?.id) {
       loadWeeklyWorkouts(data.profile.id);
     }
-  }, [data?.profile?.id]); // Re-run when profile ID changes
+  }, [data?.profile?.id, workoutTemplates]);
 
   const loadWorkoutTemplates = async () => {
     try {
+      await initializeDefaultTemplates();
       const templates = await getWorkoutTemplates();
       setWorkoutTemplates(templates);
     } catch (error) {
@@ -77,10 +81,9 @@ export default function CoachingClientView() {
     try {
       setLoadingWeekly(true);
 
-      // Get current week dates (Monday to Sunday)
       const today = new Date();
       const currentDay = today.getDay();
-      const mondayOffset = currentDay === 0 ? -6 : 1 - currentDay; // Handle Sunday as 0
+      const mondayOffset = currentDay === 0 ? -6 : 1 - currentDay;
       const monday = new Date(today);
       monday.setDate(today.getDate() + mondayOffset);
 
@@ -91,19 +94,16 @@ export default function CoachingClientView() {
         weekDates.push(date);
       }
 
-      // Fetch training sessions for this week using the new lib function
       const startDate = weekDates[0].toISOString().split('T')[0];
       const endDate = weekDates[6].toISOString().split('T')[0];
 
       const trainingSessions = await getClientTrainingSessions(clientId, startDate, endDate);
 
-      // Create weekly workout structure
       const dayNames = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
       const weeklyData: WeeklyWorkout[] = weekDates.map((date, index) => {
-        const dateString = date.toISOString().split('T');
+        const dateString = date.toISOString().split('T')[0];
         const dayNumber = date.getDate();
 
-        // Find training session on this date
         const session = trainingSessions.find(s => s.scheduled_date === dateString);
 
         let template = null;
@@ -113,17 +113,14 @@ export default function CoachingClientView() {
         let scheduledTime = undefined;
 
         if (session) {
-          // Try to get template info
           if (session.template_id) {
             const templateData = workoutTemplates.find(t => t.id === session.template_id);
             if (templateData) {
               template = { id: templateData.id, name: templateData.name };
             } else {
-              // Fallback template info if template not found in local state
               template = { id: session.template_id, name: 'Workout' };
             }
           } else {
-            // Generic workout/training session if no template_id
             template = {
               id: session.id,
               name: session.type || 'Training Session'
@@ -133,13 +130,11 @@ export default function CoachingClientView() {
           sessionId = session.id;
           scheduledTime = session.scheduled_time;
 
-          // Determine completion status based on session.status
           if (session.status === 'completed') {
             completed = true;
           } else if (session.status === 'no_show' || session.status === 'cancelled') {
             missed = true;
           } else {
-            // Check if session is missed (past date and not completed)
             const sessionDate = new Date(dateString);
             const now = new Date();
             if (sessionDate < now && session.status === 'scheduled') {
@@ -169,10 +164,10 @@ export default function CoachingClientView() {
 
   const handleRefresh = async () => {
     setRefreshing(true);
-    await refreshData(); // Refresh data from useTodayDataNew
-    await loadWorkoutTemplates(); // Reload templates
+    await refreshData();
+    await loadWorkoutTemplates();
     if (data?.profile?.id) {
-      await loadWeeklyWorkouts(data.profile.id); // Reload weekly workouts
+      await loadWeeklyWorkouts(data.profile.id);
     }
     setRefreshing(false);
   };
@@ -182,48 +177,21 @@ export default function CoachingClientView() {
   };
 
   const handleDayPress = (workout: WeeklyWorkout) => {
-    if (!workout.template) {
+    if (!workout.template && !workout.sessionId) {
       console.log('No workout scheduled for this day');
       return;
     }
 
-    console.log('handleDayPress: workout:', workout);
-
     if (workout.sessionId) {
       if (workout.completed) {
-        // Navigate to workout detail/history
         router.push(`/workout-detail/${workout.sessionId}`);
       } else if (workout.missed) {
-        // Show missed workout detail
         router.push(`/workout-detail/${workout.sessionId}`);
       } else {
-        // Navigate to start workout
         router.push(`/start-workout/${workout.sessionId}`);
       }
     } else {
-      console.log('No session ID found for this workout.');
-      // Fallback for templates without a direct session (e.g., if template was just created)
-      // This part might need adjustment based on how you want to handle templates vs. actual sessions
-      // For now, if no sessionId, we can't start a specific session.
       Alert.alert('Info', 'No specific session found to start or view details for this workout.');
-    }
-  };
-
-  const formatDate = (date: Date) => {
-    const today = new Date();
-    const yesterday = new Date(today);
-    yesterday.setDate(today.getDate() - 1);
-
-    if (date.toDateString() === today.toDateString()) {
-      return 'Today';
-    } else if (date.toDateString() === yesterday.toDateString()) {
-      return 'Yesterday';
-    } else {
-      return date.toLocaleDateString('en-US', {
-        weekday: 'long',
-        month: 'short',
-        day: 'numeric'
-      });
     }
   };
 
@@ -259,7 +227,7 @@ export default function CoachingClientView() {
                   workout.missed && styles.missedDayButton
                 ]}
                 onPress={() => handleDayPress(workout)}
-                disabled={!workout.template}
+                disabled={!workout.template && !workout.sessionId}
                 activeOpacity={0.7}
               >
                 <Text style={[
@@ -353,7 +321,6 @@ export default function CoachingClientView() {
 
     return (
       <>
-        {/* Achievement Progress */}
         <View style={styles.card}>
           <View style={styles.cardHeader}>
             <Text style={styles.cardTitle}>Your Progress</Text>
@@ -369,7 +336,6 @@ export default function CoachingClientView() {
           </View>
         </View>
 
-        {/* Achievement List */}
         <Text style={styles.sectionTitle}>Achievements</Text>
 
         {achievements.map((achievement, index) => (
@@ -456,19 +422,10 @@ export default function CoachingClientView() {
       >
         {selectedTab === 'workouts' ? (
           <>
-            {/* Weekly Training Calendar */}
             {renderWeeklyCalendar()}
-
-            {/* Task Section */}
             {renderTaskSection()}
-
-            {/* Macros Section */}
             {renderMacrosSection()}
-
-            {/* Resources Section */}
             {renderResourcesSection()}
-
-            {/* Trainer/Team Info */}
             {data && 'clientAssignment' in data && data.clientAssignment && (
               <View style={styles.card}>
                 <View style={styles.cardHeader}>
