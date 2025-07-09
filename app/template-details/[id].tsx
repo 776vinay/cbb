@@ -9,13 +9,13 @@ import {
   Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { 
-  ArrowLeft, 
-  Edit, 
-  Copy, 
-  Trash2, 
-  Play, 
-  Clock, 
+import {
+  ArrowLeft,
+  Edit,
+  Copy,
+  Trash2,
+  Play,
+  Clock,
   Dumbbell,
   ChevronRight,
   MoreHorizontal
@@ -31,7 +31,7 @@ export default function TemplateDetailsScreen() {
   const colors = getColors(colorScheme as 'light' | 'dark' | null);
   const styles = createStyles(colors);
   const { id } = useLocalSearchParams();
-  
+
   const [template, setTemplate] = useState<WorkoutTemplate | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -91,7 +91,8 @@ export default function TemplateDetailsScreen() {
           createdBy: templateData.created_by,
           createdAt: templateData.created_at,
           updatedAt: templateData.updated_at,
-          isPublic: templateData.is_public
+          isPublic: templateData.is_public,
+          image_url: templateData.image_url, // Load image_url
         };
 
         setTemplate(transformedTemplate);
@@ -134,17 +135,50 @@ export default function TemplateDetailsScreen() {
                 .from('template_exercises')
                 .delete()
                 .eq('template_id', template.id);
-              
+
               if (teError) {
                 throw teError;
               }
 
-              // Delete the template
+              // Delete plan_templates (if they exist)
+              const { error: ptError } = await supabase
+                .from('plan_templates')
+                .delete()
+                .eq('template_id', template.id);
+
+              if (ptError) {
+                console.error('Error deleting plan templates:', ptError);
+                // Don't throw here as this table might not exist
+              }
+
+              // Update workout_sessions to remove template reference
+              const { error: wsError } = await supabase
+                .from('workout_sessions')
+                .update({ template_id: null })
+                .eq('template_id', template.id);
+
+              if (wsError) {
+                console.error('Error updating workout sessions:', wsError);
+                // Don't throw here as this table might not exist
+              }
+
+              // Update training_sessions to remove template reference
+              const { error: tsError } = await supabase
+                .from('training_sessions')
+                .update({ template_id: null })
+                .eq('template_id', template.id);
+
+              if (tsError) {
+                console.error('Error updating training sessions:', tsError);
+                // Don't throw here as this table might not exist
+              }
+
+              // Finally delete the template
               const { error: templateError } = await supabase
                 .from('workout_templates')
                 .delete()
                 .eq('id', template.id);
-              
+
               if (templateError) {
                 throw templateError;
               }
@@ -218,6 +252,9 @@ export default function TemplateDetailsScreen() {
       <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
         {/* Template Header */}
         <View style={styles.templateHeader}>
+          {template.image_url && (
+            <Image source={{ uri: template.image_url }} style={styles.templateImage} />
+          )}
           <View style={styles.templateInfo}>
             <Text style={styles.templateName}>{template.name}</Text>
             {template.description && (
@@ -230,7 +267,7 @@ export default function TemplateDetailsScreen() {
               </View>
               <View style={styles.metaItem}>
                 <Clock size={16} color={colors.textSecondary} />
-                <Text style={styles.metaText}>{formatDuration(template.duration)}</Text>
+                <Text style={styles.metaText}>{formatDuration(template.estimated_duration_minutes)}</Text>
               </View>
             </View>
             <View style={[styles.categoryBadge, { backgroundColor: `${colors.primary}15` }]}>
@@ -247,18 +284,18 @@ export default function TemplateDetailsScreen() {
             <Play size={20} color="#FFFFFF" />
             <Text style={styles.primaryButtonText}>Start Workout</Text>
           </TouchableOpacity>
-          
+
           <View style={styles.secondaryButtons}>
             <TouchableOpacity style={styles.secondaryButton} onPress={handleEdit}>
               <Edit size={18} color={colors.primary} />
               <Text style={styles.secondaryButtonText}>Edit</Text>
             </TouchableOpacity>
-            
+
             <TouchableOpacity style={styles.secondaryButton} onPress={handleDuplicate}>
               <Copy size={18} color={colors.success} />
               <Text style={styles.secondaryButtonText}>Duplicate</Text>
             </TouchableOpacity>
-            
+
             <TouchableOpacity style={styles.secondaryButton} onPress={handleDelete}>
               <Trash2 size={18} color={colors.error} />
               <Text style={styles.secondaryButtonText}>Delete</Text>
@@ -269,11 +306,11 @@ export default function TemplateDetailsScreen() {
         {/* Exercises List */}
         <View style={styles.exercisesSection}>
           <Text style={styles.sectionTitle}>Exercises ({template.exercises.length})</Text>
-          
+
           {template.exercises.map((templateExercise, index) => (
             <View key={templateExercise.id} style={styles.exerciseCard}>
               <View style={styles.exerciseHeader}>
-                <Image 
+                <Image
                   source={{ uri: getExerciseImage(templateExercise.exercise.name, index) }}
                   style={styles.exerciseImage}
                 />
@@ -281,27 +318,27 @@ export default function TemplateDetailsScreen() {
                   <Text style={styles.exerciseName}>{templateExercise.exercise.name}</Text>
                   <Text style={styles.exerciseCategory}>{templateExercise.exercise.category}</Text>
                   <Text style={styles.exerciseMuscles}>
-                    {templateExercise.exercise.muscleGroups?.join(', ') || 'No muscle groups specified'}
+                    {templateExercise.exercise.muscle_groups?.join(', ') || 'No muscle groups specified'}
                   </Text>
                 </View>
                 <ChevronRight size={20} color={colors.textTertiary} />
               </View>
-              
+
               <View style={styles.exerciseDetails}>
                 <Text style={styles.setsTitle}>Sets Configuration:</Text>
-                {templateExercise.sets.map((set, setIndex) => (
+                {templateExercise.sets_config.map((set, setIndex) => (
                   <View key={setIndex} style={styles.setRow}>
                     <Text style={styles.setNumber}>Set {setIndex + 1}</Text>
                     <Text style={styles.setDetails}>
                       {set.reps ? `${set.reps} reps` : ''}
                       {set.weight ? ` @ ${set.weight}kg` : ''}
                       {set.duration ? ` ${set.duration}s` : ''}
-                      {set.restTime ? ` • Rest: ${set.restTime}s` : ''}
+                      {set.rest_time ? ` • Rest: ${set.rest_time}s` : ''}
                     </Text>
                   </View>
                 ))}
               </View>
-              
+
               {templateExercise.notes && (
                 <View style={styles.exerciseNotes}>
                   <Text style={styles.notesTitle}>Notes:</Text>
@@ -315,7 +352,7 @@ export default function TemplateDetailsScreen() {
         {/* Template Info */}
         <View style={styles.templateInfoSection}>
           <Text style={styles.sectionTitle}>Template Information</Text>
-          
+
           <View style={styles.infoCard}>
             <View style={styles.infoRow}>
               <Text style={styles.infoLabel}>Created by:</Text>
@@ -369,20 +406,12 @@ const createStyles = (colors: any) => StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 40,
   },
-  errorTitle: {
+  errorText: {
     fontFamily: 'Inter-Bold',
     fontSize: 20,
     color: colors.text,
     marginBottom: 8,
     textAlign: 'center',
-  },
-  errorText: {
-    fontFamily: 'Inter-Regular',
-    fontSize: 16,
-    color: colors.textSecondary,
-    textAlign: 'center',
-    lineHeight: 24,
-    marginBottom: 24,
   },
   backButton: {
     backgroundColor: colors.primary,
@@ -426,6 +455,13 @@ const createStyles = (colors: any) => StyleSheet.create({
     padding: 20,
     borderBottomWidth: 1,
     borderBottomColor: colors.borderLight,
+  },
+  templateImage: {
+    width: '100%',
+    height: 200,
+    borderRadius: 12,
+    marginBottom: 20,
+    resizeMode: 'cover',
   },
   templateInfo: {
     alignItems: 'flex-start',
