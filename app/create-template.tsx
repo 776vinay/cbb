@@ -8,27 +8,33 @@ import {
   TextInput,
   Alert,
   Modal,
+  Image, // Import Image
+  Platform, // Import Platform
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { 
-  ArrowLeft, 
-  Plus, 
+import {
+  ArrowLeft,
+  Plus,
   Search,
   X,
   ChevronDown,
   Trash2,
-  GripVertical
+  GripVertical,
+  Image as ImageIcon, // Renamed to avoid conflict with RN Image
 } from 'lucide-react-native';
 import { useColorScheme, getColors } from '@/hooks/useColorScheme';
 import { router, useLocalSearchParams } from 'expo-router';
-import { WorkoutTemplate, Exercise, TemplateExercise } from '@/types/workout';
+import { WorkoutTemplate, TemplateExercise } from '@/types/workout';
 import { getExercises } from '@/utils/storage';
 import { supabase } from '@/lib/supabase';
 import BottomSheet from '@/components/BottomSheet';
+import * as ImagePicker from 'expo-image-picker'; // Import ImagePicker
+import 'react-native-url-polyfill/auto'; // Required for Supabase Storage on React Native
+import { decode } from 'base64-arraybuffer'; // For converting base64 to ArrayBuffer
 
 const templateCategories = [
   'Strength',
-  'Cardio', 
+  'Cardio',
   'Bodyweight',
   'HIIT',
   'Flexibility',
@@ -58,7 +64,8 @@ export default function CreateTemplateScreen() {
   const [selectedCategory, setSelectedCategory] = useState('');
   const [estimatedDuration, setEstimatedDuration] = useState('60');
   const [templateExercises, setTemplateExercises] = useState<TemplateExercise[]>([]);
-  
+  const [thumbnailImage, setThumbnailImage] = useState<string | null>(null); // New state for thumbnail
+
   const [exercises, setExercises] = useState<Exercise[]>([]);
   const [showExercisePicker, setShowExercisePicker] = useState(false);
   const [showCategoryPicker, setShowCategoryPicker] = useState(false);
@@ -115,7 +122,7 @@ export default function CreateTemplateScreen() {
   const loadTemplate = async () => {
     try {
       const templateId = (edit || duplicate) as string;
-      
+
       // Fetch template from Supabase
       const { data: templateData, error: templateError } = await supabase
         .from('workout_templates')
@@ -181,7 +188,8 @@ export default function CreateTemplateScreen() {
           createdBy: templateData.created_by,
           createdAt: templateData.created_at,
           updatedAt: templateData.updated_at,
-          isPublic: templateData.is_public
+          isPublic: templateData.is_public,
+          image_url: templateData.image_url, // Load image_url
         };
 
         setTemplateName(isDuplicating ? `${template.name} (Copy)` : template.name);
@@ -189,6 +197,7 @@ export default function CreateTemplateScreen() {
         setSelectedCategory(template.category);
         setEstimatedDuration(template.duration.toString());
         setTemplateExercises(template.exercises);
+        setThumbnailImage(template.image_url || null); // Set thumbnail image
       }
     } catch (error) {
       console.error('Error loading template:', error);
@@ -216,6 +225,85 @@ export default function CreateTemplateScreen() {
 
   const handleRemoveExercise = (exerciseId: string) => {
     setTemplateExercises(prev => prev.filter(ex => ex.id !== exerciseId));
+  };
+
+  const pickImage = async () => {
+    if (Platform.OS !== 'web') {
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission required', 'Please grant media library permissions to select an image.');
+        return;
+      }
+    }
+
+    let result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaType.Images, // Use MediaType.Images
+      allowsEditing: true,
+      aspect: [4, 3],
+      quality: 0.5,
+    });
+
+    if (!result.canceled) {
+      const uri = result.assets[0].uri;
+      setLoading(true);
+      try {
+        const imageUrl = await uploadImageToSupabase(uri);
+        if (imageUrl) {
+          setThumbnailImage(imageUrl);
+          Alert.alert('Success', 'Image uploaded successfully!');
+        } else {
+          Alert.alert('Error', 'Failed to upload thumbnail image.');
+        }
+      } catch (error) {
+        console.error('Error uploading image:', error);
+        Alert.alert('Error', 'Failed to upload thumbnail image.');
+      } finally {
+        setLoading(false);
+      }
+    }
+  };
+
+  const uploadImageToSupabase = async (uri: string): Promise<string | null> => {
+    try {
+      const response = await fetch(uri);
+      const blob = await response.blob();
+
+      const fileExt = uri.split('.').pop();
+      const fileName = `${generateUUID()}.${fileExt}`;
+      const filePath = `template_thumbnails/${fileName}`; // Folder in your bucket
+
+      // Supabase Storage upload requires ArrayBuffer for React Native
+      const reader = new FileReader();
+      reader.readAsDataURL(blob);
+      await new Promise(resolve => reader.onloadend = resolve);
+      const base64 = reader.result?.toString().split(',')[1];
+
+      if (!base64) {
+        throw new Error('Failed to convert image to base64');
+      }
+
+      const arrayBuffer = decode(base64);
+
+      const { data, error } = await supabase.storage
+        .from('thumbnails') // Your Supabase Storage bucket name
+        .upload(filePath, arrayBuffer, {
+          contentType: blob.type,
+          upsert: true,
+        });
+
+      if (error) {
+        throw error;
+      }
+
+      const { data: publicUrlData } = supabase.storage
+        .from('thumbnails')
+        .getPublicUrl(filePath);
+
+      return publicUrlData.publicUrl;
+    } catch (error) {
+      console.error('Error uploading image to Supabase:', error);
+      throw error;
+    }
   };
 
   const handleSaveTemplate = async () => {
@@ -258,13 +346,13 @@ export default function CreateTemplateScreen() {
         .select('id')
         .eq('user_id', user.id)
         .single();
-      
+
       if (profileError || !profileData) {
         Alert.alert('Error', 'User profile not found');
         setLoading(false);
         return;
       }
-      
+
       const templateId = isEditing ? (edit as string) : generateUUID();
       // Insert or update workout_templates
       const templateData = {
@@ -275,6 +363,7 @@ export default function CreateTemplateScreen() {
         estimated_duration_minutes: parseInt(estimatedDuration) || 60,
         created_by: profileData.id,
         is_public: false,
+        image_url: thumbnailImage, // Save image_url
       };
       let templateResult;
       if (isEditing) {
@@ -337,7 +426,7 @@ export default function CreateTemplateScreen() {
   const filteredExercises = exercises.filter(exercise =>
     exercise.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
     exercise.category.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    (exercise.muscleGroups || []).some(mg => mg.toLowerCase().includes(searchQuery.toLowerCase()))
+    (exercise.muscle_groups || []).some(mg => mg.toLowerCase().includes(searchQuery.toLowerCase()))
   );
 
   const renderExerciseCard = (templateExercise: TemplateExercise, index: number) => {
@@ -348,7 +437,7 @@ export default function CreateTemplateScreen() {
             <Text style={styles.exerciseName}>{templateExercise.exercise.name}</Text>
             <Text style={styles.exerciseCategory}>{templateExercise.exercise.category}</Text>
             <Text style={styles.exerciseMuscles}>
-              {(templateExercise.exercise.muscleGroups || []).join(', ')}
+              {(templateExercise.exercise.muscle_groups || []).join(', ')}
             </Text>
           </View>
           <TouchableOpacity
@@ -392,7 +481,7 @@ export default function CreateTemplateScreen() {
         {/* Template Information */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Template Information</Text>
-          
+
           <View style={styles.formField}>
             <Text style={styles.fieldLabel}>Template Name *</Text>
             <TextInput
@@ -415,6 +504,21 @@ export default function CreateTemplateScreen() {
               multiline
               numberOfLines={3}
             />
+          </View>
+
+          {/* Thumbnail Image Upload */}
+          <View style={styles.formField}>
+            <Text style={styles.fieldLabel}>Thumbnail Image</Text>
+            <TouchableOpacity style={styles.imagePickerButton} onPress={pickImage}>
+              {thumbnailImage ? (
+                <Image source={{ uri: thumbnailImage }} style={styles.thumbnailPreview} />
+              ) : (
+                <View style={styles.imagePickerPlaceholder}>
+                  <ImageIcon size={48} color={colors.textTertiary} />
+                  <Text style={styles.imagePickerText}>Upload Image</Text>
+                </View>
+              )}
+            </TouchableOpacity>
           </View>
 
           <View style={styles.formRow}>
@@ -495,7 +599,7 @@ export default function CreateTemplateScreen() {
               <X size={24} color={colors.text} />
             </TouchableOpacity>
           </View>
-          
+
           <ScrollView style={styles.categoryList}>
             {templateCategories.map((category) => (
               <TouchableOpacity
@@ -532,7 +636,7 @@ export default function CreateTemplateScreen() {
         colors={colors}
         snapPoints={[0.7, 0.95]}
       >
-        
+
         {/* Search */}
         <View style={styles.searchContainer}>
           <Search size={20} color={colors.textTertiary} style={styles.searchIcon} />
@@ -572,7 +676,7 @@ export default function CreateTemplateScreen() {
                   <Text style={styles.exerciseOptionName}>{exercise.name}</Text>
                   <Text style={styles.exerciseOptionCategory}>{exercise.category}</Text>
                   <Text style={styles.exerciseOptionMuscles}>
-                    {(exercise.muscleGroups || []).join(', ')}
+                    {(exercise.muscle_groups || []).join(', ')}
                   </Text>
                 </View>
                 <Plus size={20} color={colors.primary} />
@@ -676,6 +780,31 @@ const createStyles = (colors: any) => StyleSheet.create({
     paddingVertical: 12,
     minHeight: 80,
     textAlignVertical: 'top',
+  },
+  imagePickerButton: {
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 8,
+    height: 150,
+    justifyContent: 'center',
+    alignItems: 'center',
+    overflow: 'hidden',
+  },
+  imagePickerPlaceholder: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  imagePickerText: {
+    fontFamily: 'Inter-Medium',
+    fontSize: 14,
+    color: colors.textTertiary,
+    marginTop: 8,
+  },
+  thumbnailPreview: {
+    width: '100%',
+    height: '100%',
+    resizeMode: 'cover',
   },
   picker: {
     flexDirection: 'row',
