@@ -9,8 +9,8 @@ import {
   Dimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { 
-  ArrowLeft, 
+import {
+  ArrowLeft,
   Play,
   Clock,
   Dumbbell,
@@ -88,17 +88,17 @@ export default function TodaysWorkoutScreen() {
           <Play size={16} color="#FFFFFF" />
         </View>
       </View>
-      
+
       <View style={styles.exerciseInfo}>
         <Text style={styles.exerciseName}>{exercise.exercise.name}</Text>
         <Text style={styles.exerciseDetails}>
-          {exercise.sets.map(set => set.reps).join(', ')} reps
+          {exercise.sets_config.map((set: any) => set.reps).join(', ')} reps
         </Text>
         <Text style={styles.exerciseCategory}>{exercise.exercise.category}</Text>
       </View>
-      
+
       <View style={styles.exerciseSets}>
-        <Text style={styles.exerciseSetCount}>x{exercise.sets.length}</Text>
+        <Text style={styles.exerciseSetCount}>x{exercise.sets_config.length}</Text>
       </View>
     </TouchableOpacity>
   );
@@ -129,8 +129,8 @@ export default function TodaysWorkoutScreen() {
     <View style={styles.container}>
       {/* Hero Section with Background Image */}
       <View style={styles.heroSection}>
-        <Image 
-          source={{ uri: 'https://images.pexels.com/photos/1552242/pexels-photo-1552242.jpeg?auto=compress&cs=tinysrgb&w=800' }}
+        <Image
+          source={{ uri: workout.image_url || 'https://images.pexels.com/photos/1552242/pexels-photo-1552242.jpeg?auto=compress&cs=tinysrgb&w=800' }}
           style={styles.heroImage}
         />
         <LinearGradient
@@ -164,7 +164,7 @@ export default function TodaysWorkoutScreen() {
                 </View>
                 <View style={styles.heroMetaItem}>
                   <Clock size={16} color="rgba(255, 255, 255, 0.8)" />
-                  <Text style={styles.heroMetaText}>{workout.duration} min</Text>
+                  <Text style={styles.heroMetaText}>{workout.estimated_duration_minutes} min</Text>
                 </View>
                 <View style={styles.heroMetaItem}>
                   <Target size={16} color="rgba(255, 255, 255, 0.8)" />
@@ -194,7 +194,7 @@ export default function TodaysWorkoutScreen() {
           <Text style={styles.sectionTitle}>Dynamic Warm Up</Text>
           <TouchableOpacity style={styles.warmUpItem}>
             <View style={styles.warmUpImageContainer}>
-              <Image 
+              <Image
                 source={{ uri: 'https://images.pexels.com/photos/3822356/pexels-photo-3822356.jpeg?auto=compress&cs=tinysrgb&w=400' }}
                 style={styles.warmUpImage}
               />
@@ -221,7 +221,7 @@ export default function TodaysWorkoutScreen() {
           <Text style={styles.sectionTitle}>Stretching & Cool Down</Text>
           <TouchableOpacity style={styles.coolDownItem}>
             <View style={styles.coolDownImageContainer}>
-              <Image 
+              <Image
                 source={{ uri: 'https://images.pexels.com/photos/3822356/pexels-photo-3822356.jpeg?auto=compress&cs=tinysrgb&w=400' }}
                 style={styles.coolDownImage}
               />
