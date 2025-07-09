@@ -42,6 +42,7 @@ export interface WorkoutTemplate {
   created_at: string;
   updated_at: string;
   exercises: TemplateExercise[];
+  image_url?: string; // Added image_url property
 }
 
 export interface WorkoutPlan {
