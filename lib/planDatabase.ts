@@ -1,283 +1,160 @@
+/planDatabase.ts
 import { supabase } from './supabase';
-import { getCurrentUserProfile } from './database';
-
-export interface WorkoutPlan {
-  id: string;
-  client_id: string;
-  trainer_id: string;
-  name: string;
-  description?: string;
-  start_date: string;
-  end_date: string;
-  schedule_type: 'weekly' | 'monthly' | 'custom';
-  schedule_data: any;
-  status: 'draft' | 'active' | 'completed' | 'cancelled';
-  created_at: string;
-  updated_at: string;
-}
-
-export interface PlanSession {
-  id: string;
-  plan_id: string;
-  template_id?: string;
-  scheduled_date: string;
-  scheduled_time?: string;
-  day_of_week?: string;
-  week_number?: number;
-  status: 'scheduled' | 'completed' | 'skipped' | 'cancelled';
-  notes?: string;
-}
-
-export interface ClientProfile {
-  id: string;
-  full_name: string;
-  email: string;
-  role: string;
-  avatar?: string;
-  created_at: string;
-}
+import { WorkoutPlan, PlanSession, WorkoutTemplate } from '@/types/workout';
+import { Alert } from 'react-native';
 
 export interface WorkoutTemplateForPlan {
   id: string;
   name: string;
   category: string;
   estimated_duration_minutes: number;
-  is_public: boolean;
-  created_by: string;
 }
 
-// Get trainer's clients with better error handling and logging
-export const getTrainerClients = async (): Promise<ClientProfile[]> => {
-  try {
-    console.log('🔍 Getting trainer clients...');
-    
-    const profile = await getCurrentUserProfile();
-    console.log('👤 Current profile:', profile);
-    
-    if (!profile) {
-      console.log('❌ No profile found');
-      return [];
-    }
-    
-    if (profile.role !== 'trainer') {
-      console.log('❌ User is not a trainer, role:', profile.role);
-      return [];
-    }
+export interface ClientProfile {
+  id: string;
+  full_name: string;
+  email: string;
+}
 
-    console.log('🔍 Fetching client assignments for trainer:', profile.id);
-
-    // First, let's check if there are any client assignments at all
-    const { data: allAssignments, error: allError } = await supabase
-      .from('client_assignments')
-      .select('*');
-    
-    console.log('📊 All client assignments:', allAssignments);
-    if (allError) console.log('❌ Error fetching all assignments:', allError);
-
-    // Now fetch trainer's specific assignments
-    const { data: assignments, error: assignmentError } = await supabase
-      .from('client_assignments')
-      .select(`
-        client_id,
-        status,
-        client:profiles!client_assignments_client_id_fkey(
-          id,
-          full_name,
-          email,
-          role,
-          avatar,
-          created_at
-        )
-      `)
-      .eq('trainer_id', profile.id)
-      .eq('status', 'active');
-
-    console.log('📋 Trainer assignments query result:', assignments);
-    console.log('❌ Assignment error:', assignmentError);
-
-    if (assignmentError) {
-      console.error('Error fetching trainer client assignments:', assignmentError);
-      return [];
-    }
-
-    if (!assignments || assignments.length === 0) {
-      console.log('📭 No active client assignments found for trainer');
-      
-      // Let's also try to get all clients for debugging
-      const { data: allClients, error: clientsError } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('role', 'client');
-      
-      console.log('👥 All clients in system:', allClients);
-      if (clientsError) console.log('❌ Error fetching all clients:', clientsError);
-      
-      return [];
-    }
-
-    // Extract client profiles from assignments
-    const clients = (assignments || [])
-      .map(assignment => assignment.client)
-      .filter((client): client is NonNullable<typeof client> => client !== null) as ClientProfile[];
-
-    console.log('✅ Successfully fetched clients:', clients);
-    return clients;
-
-  } catch (error) {
-    console.error('💥 Unexpected error in getTrainerClients:', error);
-    return [];
+async function getCurrentUserProfileId(): Promise<string> {
+  const { data: { user } = {} } = await supabase.auth.getUser();
+  if (!user) {
+    throw new Error('User not authenticated');
   }
-};
+  const { data: profile, error } = await supabase
+    .from('profiles')
+    .select('id')
+    .eq('user_id', user.id)
+    .single();
+  if (error || !profile) {
+    throw new Error('User profile not found');
+  }
+  return profile.id;
+}
 
-// Get workout templates for plans with better error handling
-export const getWorkoutTemplatesForPlans = async (): Promise<WorkoutTemplateForPlan[]> => {
+export async function getTrainerClients(): Promise<ClientProfile[]> {
   try {
-    console.log('🔍 Getting workout templates for plans...');
-    
-    const profile = await getCurrentUserProfile();
-    if (!profile) {
-      console.log('❌ No profile found for templates');
-      return [];
-    }
+    const trainerProfileId = await getCurrentUserProfileId();
 
     const { data, error } = await supabase
+      .from('client_assignments')
+      .select('client_id, profiles!client_assignments_client_id_fkey(id, full_name, email)')
+      .eq('trainer_id', trainerProfileId)
+      .eq('status', 'active');
+
+    if (error) {
+      console.error('Error fetching trainer clients:', error);
+      throw error;
+    }
+
+    return data.map(assignment => assignment.profiles as ClientProfile);
+  } catch (error) {
+    console.error('Error in getTrainerClients:', error);
+    throw error;
+  }
+}
+
+export async function getWorkoutTemplatesForPlans(): Promise<WorkoutTemplateForPlan[]> {
+  try {
+    const userProfileId = await getCurrentUserProfileId();
+    const { data, error } = await supabase
       .from('workout_templates')
-      .select(`
-        id,
-        name,
-        category,
-        estimated_duration_minutes,
-        is_public,
-        created_by
-      `)
-      .or(`is_public.eq.true,created_by.eq.${profile.id}`)
-      .order('name', { ascending: true });
+      .select('id, name, category, estimated_duration_minutes')
+      .or(`is_public.eq.true,created_by.eq.${userProfileId}`);
 
     if (error) {
       console.error('Error fetching workout templates:', error);
-      return [];
+      throw error;
     }
 
-    console.log('✅ Successfully fetched templates:', data?.length || 0);
-    return data || [];
+    return data as WorkoutTemplateForPlan[];
   } catch (error) {
-    console.error('💥 Unexpected error in getWorkoutTemplatesForPlans:', error);
-    return [];
+    console.error('Error in getWorkoutTemplatesForPlans:', error);
+    throw error;
   }
-};
+}
 
-// Create workout plan
-export const createWorkoutPlan = async (planData: {
-  client_id: string;
-  name: string;
-  description?: string;
-  start_date: string;
-  end_date: string;
-  schedule_type: 'weekly' | 'monthly' | 'custom';
-  schedule_data: any;
-}): Promise<WorkoutPlan | null> => {
+export async function createWorkoutPlan(planData: Omit<WorkoutPlan, 'id' | 'created_at' | 'updated_at' | 'status'>): Promise<WorkoutPlan | null> {
   try {
-    console.log('💾 Creating workout plan:', planData);
-    
-    const profile = await getCurrentUserProfile();
-    if (!profile || profile.role !== 'trainer') {
-      console.log('❌ Invalid profile for plan creation');
-      return null;
-    }
-
     const { data, error } = await supabase
       .from('workout_plans')
-      .insert({
-        ...planData,
-        trainer_id: profile.id,
-        status: 'draft',
-      })
+      .insert(planData)
       .select()
       .single();
 
     if (error) {
       console.error('Error creating workout plan:', error);
-      return null;
+      throw error;
     }
 
-    console.log('✅ Successfully created workout plan:', data);
-    return data;
+    return data as WorkoutPlan;
   } catch (error) {
-    console.error('💥 Unexpected error in createWorkoutPlan:', error);
-    return null;
+    console.error('Error in createWorkoutPlan:', error);
+    throw error;
   }
-};
+}
 
-// Update workout plan
-export const updateWorkoutPlan = async (
-  id: string,
-  planData: Partial<WorkoutPlan>
-): Promise<WorkoutPlan | null> => {
+export async function updateWorkoutPlan(planId: string, planData: Partial<Omit<WorkoutPlan, 'id' | 'created_at' | 'updated_at'>>): Promise<WorkoutPlan | null> {
   try {
     const { data, error } = await supabase
       .from('workout_plans')
-      .update({
-        ...planData,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', id)
+      .update(planData)
+      .eq('id', planId)
       .select()
       .single();
 
     if (error) {
       console.error('Error updating workout plan:', error);
-      return null;
+      throw error;
     }
 
-    return data;
+    return data as WorkoutPlan;
   } catch (error) {
     console.error('Error in updateWorkoutPlan:', error);
-    return null;
+    throw error;
   }
-};
+}
 
-// Get workout plan by ID
-export const getWorkoutPlan = async (id: string): Promise<WorkoutPlan | null> => {
+export async function getWorkoutPlan(planId: string): Promise<WorkoutPlan | null> {
   try {
     const { data, error } = await supabase
       .from('workout_plans')
       .select('*')
-      .eq('id', id)
+      .eq('id', planId)
       .single();
 
     if (error) {
       console.error('Error fetching workout plan:', error);
-      return null;
+      throw error;
     }
 
-    return data;
+    return data as WorkoutPlan;
   } catch (error) {
     console.error('Error in getWorkoutPlan:', error);
-    return null;
+    throw error;
   }
-};
+}
 
-// Create plan sessions
-export const createPlanSessions = async (sessions: Omit<PlanSession, 'id' | 'created_at' | 'updated_at'>[]): Promise<boolean> => {
+export async function createPlanSessions(sessions: Omit<PlanSession, 'id' | 'created_at' | 'updated_at'>[]): Promise<PlanSession[] | null> {
   try {
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from('plan_sessions')
-      .insert(sessions);
+      .insert(sessions)
+      .select();
 
     if (error) {
       console.error('Error creating plan sessions:', error);
-      return false;
+      throw error;
     }
 
-    return true;
+    return data as PlanSession[];
   } catch (error) {
     console.error('Error in createPlanSessions:', error);
-    return false;
+    throw error;
   }
-};
+}
 
-// Delete plan sessions for a plan
-export const deletePlanSessions = async (planId: string): Promise<boolean> => {
+export async function deletePlanSessions(planId: string): Promise<void> {
   try {
     const { error } = await supabase
       .from('plan_sessions')
@@ -286,81 +163,130 @@ export const deletePlanSessions = async (planId: string): Promise<boolean> => {
 
     if (error) {
       console.error('Error deleting plan sessions:', error);
-      return false;
+      throw error;
     }
-
-    return true;
   } catch (error) {
     console.error('Error in deletePlanSessions:', error);
-    return false;
+    throw error;
   }
-};
+}
 
-// Helper function to create sample client assignment for testing
-export const createSampleClientAssignment = async (): Promise<boolean> => {
+export async function getPlanSessionsForClient(clientId: string, startDate: string, endDate: string): Promise<PlanSession[]> {
   try {
-    const profile = await getCurrentUserProfile();
-    if (!profile || profile.role !== 'trainer') {
-      console.log('❌ Not a trainer, cannot create sample assignment');
+    const { data, error } = await supabase
+      .from('plan_sessions')
+      .select(`
+        *,
+        workout_plans(client_id),
+        workout_templates(name, category, estimated_duration_minutes)
+      `)
+      .gte('scheduled_date', startDate)
+      .lte('scheduled_date', endDate)
+      .order('scheduled_date', { ascending: true });
+
+    if (error) {
+      console.error('Error fetching client plan sessions:', error);
+      throw error;
+    }
+
+    const filteredData = data.filter(session => session.workout_plans?.client_id === clientId);
+
+    return filteredData.map(session => ({
+      ...session,
+      template: session.workout_templates,
+    })) as PlanSession[];
+  } catch (error) {
+    console.error('Error in getPlanSessionsForClient:', error);
+    throw error;
+  }
+}
+
+export async function createSampleClientAssignment(): Promise<boolean> {
+  try {
+    const { data: { user } = {} } = await supabase.auth.getUser();
+    if (!user) {
+      Alert.alert('Error', 'User not authenticated');
       return false;
     }
 
-    // Get a client to assign
-    const { data: clients, error: clientsError } = await supabase
+    const { data: trainerProfile, error: trainerProfileError } = await supabase
       .from('profiles')
-      .select('id, full_name, email')
-      .eq('role', 'client')
-      .limit(1);
+      .select('id')
+      .eq('user_id', user.id)
+      .eq('role', 'trainer')
+      .single();
 
-    if (clientsError || !clients || clients.length === 0) {
-      console.log('❌ No clients found to assign');
+    if (trainerProfileError || !trainerProfile) {
+      Alert.alert('Error', 'Trainer profile not found. Please ensure you are logged in as a trainer.');
       return false;
     }
 
-    const client = clients[0];
+    const { data: existingClient, error: existingClientError } = await supabase
+      .from('profiles')
+      .select('id')
+      .eq('email', 'sampleclient@vinayfit.com')
+      .single();
 
-    // Check if assignment already exists
-    const { data: existingAssignment } = await supabase
+    let sampleClientId;
+    if (existingClient) {
+      sampleClientId = existingClient.id;
+    } else {
+      const { data: newClient, error: newClientError } = await supabase
+        .from('profiles')
+        .insert({
+          email: 'sampleclient@vinayfit.com',
+          full_name: 'Sample Client',
+          role: 'client',
+        })
+        .select('id')
+        .single();
+
+      if (newClientError || !newClient) {
+        console.error('Error creating sample client:', newClientError);
+        Alert.alert('Error', 'Failed to create sample client.');
+        return false;
+      }
+      sampleClientId = newClient.id;
+    }
+
+    const { data: existingAssignment, error: assignmentCheckError } = await supabase
       .from('client_assignments')
       .select('id')
-      .eq('trainer_id', profile.id)
-      .eq('client_id', client.id)
+      .eq('client_id', sampleClientId)
+      .eq('trainer_id', trainerProfile.id)
       .single();
 
     if (existingAssignment) {
-      console.log('✅ Assignment already exists');
+      Alert.alert('Info', 'Sample client already assigned to you.');
       return true;
     }
 
-    // Create new assignment
-    const { data, error } = await supabase
+    const { error: assignmentError } = await supabase
       .from('client_assignments')
       .insert({
-        trainer_id: profile.id,
-        client_id: client.id,
+        client_id: sampleClientId,
+        trainer_id: trainerProfile.id,
+        assigned_by: trainerProfile.id,
         status: 'active',
-        assigned_date: new Date().toISOString().split('T')[0],
-      })
-      .select()
-      .single();
+      });
 
-    if (error) {
-      console.error('Error creating sample assignment:', error);
+    if (assignmentError) {
+      console.error('Error creating sample client assignment:', assignmentError);
+      Alert.alert('Error', 'Failed to create sample client assignment.');
       return false;
     }
 
-    console.log('✅ Created sample client assignment:', data);
     return true;
   } catch (error) {
-    console.error('💥 Error in createSampleClientAssignment:', error);
+    console.error('Unexpected error in createSampleClientAssignment:', error);
+    Alert.alert('Error', 'An unexpected error occurred while creating sample client assignment.');
     return false;
   }
-};
+}
 
-// Get workout plans for trainer
-export const getWorkoutPlans = async (): Promise<WorkoutPlan[]> => {
+export async function getWorkoutPlans(): Promise<WorkoutPlan[]> {
   try {
-    const profile = await getCurrentUserProfile();
+    const profile = await getCurrentUserProfileId();
     if (!profile) {
       console.log('❌ No profile found for plans');
       return [];
@@ -368,10 +294,25 @@ export const getWorkoutPlans = async (): Promise<WorkoutPlan[]> => {
 
     let query = supabase.from('workout_plans').select('*');
 
-    if (profile.role === 'trainer') {
-      query = query.eq('trainer_id', profile.id);
-    } else if (profile.role === 'client') {
-      query = query.eq('client_id', profile.id);
+    // Assuming profile.id is the user's profile ID, not auth.uid()
+    // You might need to adjust this based on how your profiles table is structured
+    // and how user roles are managed.
+    // For now, let's assume a user can only see plans where they are the client or the trainer.
+    const { data: userProfile, error: userProfileError } = await supabase
+      .from('profiles')
+      .select('role')
+      .eq('id', profile)
+      .single();
+
+    if (userProfileError || !userProfile) {
+      console.error('Error fetching user profile for plan access:', userProfileError);
+      return [];
+    }
+
+    if (userProfile.role === 'trainer') {
+      query = query.eq('trainer_id', profile);
+    } else if (userProfile.role === 'client') {
+      query = query.eq('client_id', profile);
     } else {
       console.log('❌ Not a trainer or client, cannot fetch plans');
       return [];
@@ -389,16 +330,23 @@ export const getWorkoutPlans = async (): Promise<WorkoutPlan[]> => {
     console.error('💥 Unexpected error in getWorkoutPlans:', error);
     return [];
   }
-};
+}
 
-// Delete workout plan
-export const deleteWorkoutPlan = async (planId: string): Promise<boolean> => {
+export async function deleteWorkoutPlan(planId: string): Promise<boolean> {
   try {
     console.log('🗑️ Deleting workout plan:', planId);
     
-    const profile = await getCurrentUserProfile();
-    if (!profile || profile.role !== 'trainer') {
-      console.log('❌ Not a trainer, cannot delete plan');
+    const profileId = await getCurrentUserProfileId();
+    
+    // Verify user is the trainer of this plan
+    const { data: plan, error: planError } = await supabase
+      .from('workout_plans')
+      .select('trainer_id')
+      .eq('id', planId)
+      .single();
+
+    if (planError || !plan || plan.trainer_id !== profileId) {
+      console.log('❌ User is not authorized to delete this plan or plan not found');
       return false;
     }
 
@@ -409,8 +357,7 @@ export const deleteWorkoutPlan = async (planId: string): Promise<boolean> => {
     const { error } = await supabase
       .from('workout_plans')
       .delete()
-      .eq('id', planId)
-      .eq('trainer_id', profile.id);
+      .eq('id', planId);
 
     if (error) {
       console.error('Error deleting workout plan:', error);
@@ -423,9 +370,9 @@ export const deleteWorkoutPlan = async (planId: string): Promise<boolean> => {
     console.error('💥 Unexpected error in deleteWorkoutPlan:', error);
     return false;
   }
-};
+}
 
-export const getWorkoutTemplateById = async (id: string): Promise<any | null> => {
+export async function getWorkoutTemplateById(id: string): Promise<any | null> {
   try {
     const { data, error } = await supabase
       .from('workout_templates')
@@ -442,7 +389,8 @@ export const getWorkoutTemplateById = async (id: string): Promise<any | null> =>
             category,
             muscle_groups,
             instructions,
-            equipment
+            equipment,
+            image_url // Include image_url here
           )
         )
       `)
@@ -458,9 +406,9 @@ export const getWorkoutTemplateById = async (id: string): Promise<any | null> =>
     console.error('Error in getWorkoutTemplateById:', error);
     return null;
   }
-};
+}
 
-export const getTemplateExercisesByTemplateId = async (templateId: string) => {
+export async function getTemplateExercisesByTemplateId(templateId: string) {
   const { data, error } = await supabase
     .from('template_exercises')
     .select(`
@@ -474,7 +422,8 @@ export const getTemplateExercisesByTemplateId = async (templateId: string) => {
         category,
         muscle_groups,
         instructions,
-        equipment
+        equipment,
+        image_url // Include image_url here
       )
     `)
     .eq('template_id', templateId)
@@ -484,4 +433,5 @@ export const getTemplateExercisesByTemplateId = async (templateId: string) => {
     return [];
   }
   return data || [];
-};
+}
+``````typescript
